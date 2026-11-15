@@ -1,0 +1,49 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pylibs/
+.wheels/
+
+# ---- 构建 / 打包产物（源码仓库不收录） ----
+dist/
+build/work/
+build/stage/
+build/tmp/
+build/*.log
+*.zip
+bin/ffmpeg.exe
+bin/ffplay.exe
+bin/ffprobe.exe
+
+# ---- 运行数据 / 个人配置（含本机路径、主播列表、Cookie、录像） ----
+config.json
+watchlist.json
+data/
+logs/
+records/
+.tmp/
+cookie.json
+resolve_cache.json
+*.db
+*.db-shm
+*.db-wal
+
+# ---- 测试 / 浸泡测试产物 ----
+tests/tmp/
+tests/soak/logs*/
+tests/soak/out*/
+tests/soak/tmp/
+
+# ---- 逆向分析产物（目标程序分析、抓包、个人样本等，默认不上传） ----
+analysis/
+
+# ---- 系统 / 编辑器 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp

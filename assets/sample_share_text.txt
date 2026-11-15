@@ -1,0 +1,14 @@
+四种可粘贴的直播间输入形式（复制其中一行到「添加主播」输入框）：
+
+1) 纯房间号：
+76274427953
+
+2) 电脑直播间链接：
+https://live.douyin.com/76274427953
+
+3) 手机分享短链（或整段分享文案）：
+https://v.douyin.com/iQLgKSj/
+7.43 复制打开抖音，看看【某主播】的直播  https://v.douyin.com/iQLgKSj/
+
+4) 电脑主播主页链接：
+https://www.douyin.com/user/MS4wLjABAAAAxxxxxxxxxxxxxxxxxxxxxxxx
