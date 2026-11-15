@@ -133,8 +133,7 @@ def cmd_import_file(cfg, watchlist, path_str: str, group: str = "",
         print("文件不存在: %s" % path)
         return 2
     try:
-        rows = import_util.read_table(str(path))
-        records, skipped = import_util.records_from_table(rows)
+        records, skipped, sheet_info = import_util.records_from_file(str(path))
     except Exception as exc:
         print("读取失败: %s" % exc)
         return 2
@@ -198,7 +197,12 @@ def cmd_import_file(cfg, watchlist, path_str: str, group: str = "",
     finally:
         _store_log.setLevel(_old_level)
     watchlist.save()
-    print("文件行数: %d  解析有效: %d  无法识别: %d" % (len(rows), len(records), skipped + invalid))
+    print("工作表: %s" % "、".join(
+        "%s(%d行/%d个)" % (i.get("sheet", ""), i.get("rows", 0), i.get("records", 0))
+        for i in sheet_info if int(i.get("rows") or 0) > 0) or "（空）")
+    total_rows = sum(int(i.get("rows") or 0) for i in sheet_info)
+    print("文件行数: %d（共 %d 个 sheet）  解析有效: %d  无法识别: %d"
+          % (total_rows, len(sheet_info), len(records), skipped + invalid))
     if name_only:
         print("其中仅昵称（无房间号/主页链接）%d 条，已按「停用」保留" % name_only)
     print("与现有列表重复: %d  新增: %d  当前列表共: %d" % (dup, added, len(watchlist)))

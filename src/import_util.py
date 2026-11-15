@@ -13,11 +13,19 @@ import re
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from .model import parse_target_text
-from .xlsx_reader import read_csv, read_table, read_xlsx  # noqa: F401  (对外统一入口)
+from .xlsx_reader import read_csv, read_table, read_table_sheets, read_xlsx  # noqa: F401  (对外统一入口)
 
 URL_RE = re.compile(r"https?://[^\s\"'<>，。；）)】]+")
-_HEADER_HINTS = ("链接", "地址", "url", "link", "主页", "房间")
-_NAME_HINTS = ("账号", "名称", "昵称", "主播", "名字", "name", "备注")
+# 表头识别用「精确 token」：避免把「主播丙」这类昵称误判成表头
+_HEADER_TOKENS = (
+    "昵称", "主播名称", "主播名", "名称", "名字", "账号", "主播",
+    "房间号", "房间", "roomid", "room",
+    "主页链接", "主页", "homepage", "直播间链接", "直播间地址", "直播间", "liveurl",
+    "链接", "地址", "url", "link",
+    "备注", "分组", "group", "画质", "清晰度", "quality",
+    "自动录制", "auto", "参与监控", "启用", "输出模板", "目录模板", "模板", "template",
+    "原始目标", "原始输入", "target", "note",
+)
 
 
 def normalize_url(url: str) -> str:
@@ -84,6 +92,28 @@ def _map_columns(header: Sequence[str]) -> Dict[str, int]:
     return out
 
 
+def _is_header_row(row: Sequence[str]) -> bool:
+    """判断一行是否像表头：包含已知表头词，且本身不是 URL/房间号数据行。"""
+    cells = [str(c).strip() for c in row if str(c).strip()]
+    if not cells:
+        return False
+    for c in cells:
+        if URL_RE.search(c):
+            return False
+        if c.isdigit() and len(c) >= 5:
+            return False
+    for c in cells:
+        norm = _norm_header(c)
+        if not norm:
+            continue
+        for token in _HEADER_TOKENS:
+            if norm == token:
+                return True
+            if norm.startswith(token) and len(norm) <= len(token) + 8:
+                return True
+    return False
+
+
 def records_from_table(rows: Sequence[Sequence[str]]) -> Tuple[List[Dict[str, str]], int]:
     """从表格行解析主播记录。
 
@@ -99,7 +129,7 @@ def records_from_table(rows: Sequence[Sequence[str]]) -> Tuple[List[Dict[str, st
     start = 0
     header = None
     first = [str(c).strip() for c in rows[0]]
-    if any(any(h in c.lower() for h in _HEADER_HINTS + _NAME_HINTS) for c in first if c):
+    if _is_header_row(first):
         header = first
         start = 1
     colmap = _map_columns(header) if header else {}
@@ -167,6 +197,29 @@ def records_from_table(rows: Sequence[Sequence[str]]) -> Tuple[List[Dict[str, st
             rec["live_url"] = live_url
         records.append(rec)
     return records, skipped
+
+
+def records_from_sheets(sheets) -> Tuple[List[Dict[str, str]], int, List[Dict[str, object]]]:
+    """逐个 sheet 解析主播记录（每个 sheet 独立识别表头），返回 (记录, 无效数, 明细)。
+
+    明细：[{sheet, rows, records, skipped}]，用于导入结果提示「读取了几个 sheet」。
+    """
+    records: List[Dict[str, str]] = []
+    skipped = 0
+    details: List[Dict[str, object]] = []
+    for name, rows in sheets:
+        recs, sk = records_from_table(rows)
+        details.append({"sheet": str(name or ""), "rows": len(rows),
+                        "records": len(recs), "skipped": sk})
+        records.extend(recs)
+        skipped += sk
+    return records, skipped, details
+
+
+def records_from_file(path: str) -> Tuple[List[Dict[str, str]], int, List[Dict[str, object]]]:
+    """读取 Excel/CSV 文件：xlsx 会读取全部工作表并按 sheet 分别识别表头。"""
+    sheets = read_table_sheets(path)
+    return records_from_sheets(sheets)
 
 
 def records_from_lines(lines: Iterable[str]) -> List[Dict[str, str]]:

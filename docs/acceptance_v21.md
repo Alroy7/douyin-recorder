@@ -276,3 +276,14 @@ watchlist 1360 条（用户 Excel 导入）下：
 3. 非分段模式收尾空间不足：删除本场源文件（keep_source=True 时保留），不占用空间。
 4. manager 新增 _on_recorder_critical：录制端致命磁盘告警 -> 停止全部录制 + _disk_blocked 暂停开录 + 磁盘事件。
 5. 测试：tests/test_segment_remux.py（模式开关、分段完成即转、收尾转最后一段、空间不足删除+停录+通知、非分段空间不足删除、manager 告警、真实 ffmpeg 分段 2 秒录制 8 秒 -> 4 个 mp4 无残留）PASS。
+
+## 19. 多工作表 Excel 导入（v2.5.5，2026-11-15）
+
+需求：用户提供的关注名单 Excel 含多个 sheet（当前关注名单/车/女装/女鞋/家具/房/杂），原实现 read_xlsx 只读第一个 worksheet（且按 sheetN 文件名排序），其余 sheet 全部丢失。
+
+实现：
+1. xlsx_reader.py：新增 read_xlsx_sheets / read_table_sheets，按 xl/workbook.xml + rels 解析全部工作表（保留顺序与真实表名），兼容无 workbook.xml 的旧文件；read_xlsx/read_table 保留为「第一个 sheet」兼容接口。
+2. import_util.py：新增 records_from_file / records_from_sheets，逐 sheet 独立识别表头并合并；表头识别改为精确 token（避免昵称含「主播」被误判为表头），URL/房间号数据行不会当表头。
+3. GUI 导入提示改为「N 个 sheet · M 行 · 有效 · 重复 · 无效」；CLI --import-file 打印每个 sheet 的行数/有效数。
+4. 实测用户文件：7 个 sheet 全部读取（1320+6+6+4+3+0+2 行），解析 1340 条、0 条无效，跨 sheet 无重复。
+5. 测试：tests/test_multisheet_import.py（全部 sheet 读取/顺序/空表/兼容旧接口、逐 sheet 表头、跨 sheet 去重、CLI 导入）PASS。

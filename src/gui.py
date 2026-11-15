@@ -302,8 +302,7 @@ class BatchImportDialog(_DialogBase):
         if not path:
             return
         try:
-            rows = import_util.read_table(path)
-            records, skipped = import_util.records_from_table(rows)
+            records, skipped, sheet_info = import_util.records_from_file(path)
             accepted, dup, invalid = import_util.dedupe(records)
         except Exception as exc:
             messagebox.showwarning("读取失败", "无法读取该文件：%s" % exc, parent=self)
@@ -313,9 +312,15 @@ class BatchImportDialog(_DialogBase):
         self._file_invalid = skipped + invalid
         self._file_skipped = skipped + invalid
         name = os.path.basename(path)
+        total_rows = sum(int(info.get("rows") or 0) for info in sheet_info)
+        total_sheets = len(sheet_info)
+        empty_n = len([i for i in sheet_info if int(i.get("rows") or 0) <= 0])
+        sheet_desc = "%d 个 sheet" % total_sheets
+        if empty_n:
+            sheet_desc += "（%d 个空表）" % empty_n
         self._file_label.configure(
-            text="%s：读取 %d 行 · 有效 %d · 重复 %d · 无效 %d" % (
-                name, len(rows), len(accepted), dup, skipped + invalid),
+            text="%s：%s · %d 行 · 有效 %d · 重复 %d · 无效 %d" % (
+                name, sheet_desc, total_rows, len(accepted), dup, skipped + invalid),
             color=T.OK if accepted else T.WARN)
         self._update_count()
 
