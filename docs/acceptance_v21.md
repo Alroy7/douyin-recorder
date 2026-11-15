@@ -265,3 +265,14 @@ watchlist 1360 条（用户 Excel 导入）下：
 3. remux 并发限制：remux_concurrency（默认 2，设置→录制可调），避免几十路同时写 MP4 把磁盘瞬间写满/IO 打满。
 4. 导出诊断包：GUI 改为进程内调用 cli.export_diagnostics（打包版 sys.executable 是 GUI exe，原来 spawn run.py 会失败），成功/失败都有弹窗。
 - 测试：tests/test_disk_policy.py（保留值立即阻断/恢复、remux 空间不足跳过并保留源文件、诊断包导出）PASS。
+
+## 18. 方案 C+A：分段即时转 MP4 / 空间不足停录删文件（v2.5.4，2026-11-15）
+
+用户选定：按设置的分段时长，每段结束立即转 MP4（方案 C）；同时加入空间判断（方案 A）——没有空间转换时马上停止录制，无法转换的文件直接删除，不保留临时错误文件。
+
+实现：
+1. segment_remux_now（默认 True）：segment_duration>0 时启用分段即时转码；刷新文件时把上一段入队，独立 seg-remux 线程转码；当前正在写的分段不处理；收尾时转最后一段并清理 0 字节占位文件。
+2. 每段转码前检查剩余空间 >= 源文件 + 300MB；不足：删除该段源文件、设置停止标志、通知 manager 停止全部录制并暂停开录；失败（尤其 ENOSPC）同样删除源文件，不留半成品。
+3. 非分段模式收尾空间不足：删除本场源文件（keep_source=True 时保留），不占用空间。
+4. manager 新增 _on_recorder_critical：录制端致命磁盘告警 -> 停止全部录制 + _disk_blocked 暂停开录 + 磁盘事件。
+5. 测试：tests/test_segment_remux.py（模式开关、分段完成即转、收尾转最后一段、空间不足删除+停录+通知、非分段空间不足删除、manager 告警、真实 ffmpeg 分段 2 秒录制 8 秒 -> 4 个 mp4 无残留）PASS。

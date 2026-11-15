@@ -1662,6 +1662,23 @@ class MonitorManager:
             self.log.info("本批开录 %d 个，当前在录 %d 个，排队 %d 个",
                           started, active, len(self._queue))
 
+    def _on_recorder_critical(self, item_id: str, reason: str) -> None:
+        """录制端报告致命磁盘问题：立即停止全部录制并暂停开录。"""
+        try:
+            self.log.error("录制端磁盘告警（%s）：%s", item_id, reason)
+            self._disk_blocked = True
+            with self._lock:
+                recorders = list(self._recorders.values())
+            for rec in recorders:
+                try:
+                    rec.stop(reason)
+                except Exception:
+                    pass
+            self._emit(EventType.DISK,
+                       "磁盘空间不足，已停止全部录制：%s" % reason)
+        except Exception:  # pragma: no cover
+            self.log.exception("处理录制端磁盘告警失败")
+
     def _start_recording(self, item: WatchItem, st: StatusView,
                          quality: Optional[str] = None) -> bool:
         quality = str(quality or self._session_quality.get(item.id)
@@ -1718,6 +1735,7 @@ class MonitorManager:
                 min_keep_seconds=self.cfg.get_int("min_keep_seconds"),
                 container=self.cfg.get_str("container"),
                 remux_mp4=self.cfg.get_bool("remux_mp4"),
+                segment_remux_now=self.cfg.get_bool("segment_remux_now"),
                 keep_source=self.cfg.get_bool("keep_source"),
                 segment_duration=self.cfg.get_int("segment_duration"),
                 segment_size_mb=self.cfg.get_int("segment_size_mb"),
@@ -1737,6 +1755,7 @@ class MonitorManager:
                 # 断流交给 recorder 正常重连（产生 RECONNECT 事件，供清晰度自动降档使用）。
                 is_live_fn=None,
                 on_event=lambda ev, iid=item.id: self._on_recorder_event(ev, iid),
+                on_critical=lambda reason, iid=item.id: self._on_recorder_critical(iid, reason),
             )
         except Exception as exc:  # pragma: no cover
             self.log.exception("创建录制任务失败")

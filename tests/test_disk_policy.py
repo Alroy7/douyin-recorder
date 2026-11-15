@@ -73,8 +73,9 @@ def test_remux_preflight():
         recmod.diskmod.free_gb = orig_free
     print("preflight out:", out, "remux called:", len(called))
     assert not called, "空间不足时不应尝试 remux"
-    assert src.exists(), "空间不足时应保留原文件"
-    print("PASS 空间不足时跳过转 MP4 并保留原文件")
+    assert out == [], "空间不足应返回空（文件已删除）"
+    assert not src.exists(), "空间不足无法转换时删除源文件（v2.5.4 行为）"
+    print("PASS 空间不足时跳过转 MP4 并删除源文件")
 
 
 def test_diagnostics_export():

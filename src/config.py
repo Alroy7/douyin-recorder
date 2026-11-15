@@ -78,6 +78,7 @@ DEFAULTS: Dict[str, Any] = {
     "keep_source": False,            # remux 成 MP4 后是否保留原文件
     "remux_concurrency": 2,          # 同时转 MP4 的数量（1~8，避免同时写爆磁盘）
     "segment_duration": 0,           # 分段时长（秒），0 = 不分段
+    "segment_remux_now": True,        # 分段结束立即转 MP4（分段时长>0 时生效）
     "segment_size_mb": 0,            # 单文件大小上限（MB），0 = 不限；超出后自动换新文件
     "stall_check_seconds": 30,       # 卡死看门狗：每隔多少秒检查一次录制文件是否增长
     "stall_kill_after": 2,           # 连续 N 次无增长则判定 ffmpeg 卡死并重启录制

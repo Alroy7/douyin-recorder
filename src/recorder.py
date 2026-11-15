@@ -92,6 +92,8 @@ class RoomRecorder:
         room_id: str = "",
         container: str = "flv",
         remux_mp4: bool = True,
+        segment_remux_now: bool = True,
+        on_critical: Optional[Callable[[str], None]] = None,
         keep_source: bool = False,
         min_keep_seconds: Optional[int] = None,
         quality: str = "",
@@ -133,6 +135,19 @@ class RoomRecorder:
         self.quality = str(quality or "")
         self.segment_duration = max(0, int(segment_duration or 0))
         self.segment_size_mb = max(0, int(segment_size_mb or 0))
+        # ---- 分段即时转 MP4（C 方案）：每段结束就转、空间不足立即停录并删除无法转换的文件 ----
+        self.segment_remux_now = bool(segment_remux_now)
+        self.on_critical = on_critical
+        self._seg_mode = bool(self.remux_mp4 and self.segment_duration > 0
+                              and self.segment_remux_now)
+        self._seg_queue: List[Path] = []
+        self._seg_enqueued: set = set()
+        self._seg_outputs: List[Path] = []
+        self._seg_lock = threading.Lock()
+        self._seg_stop = threading.Event()
+        self._seg_worker: Optional[threading.Thread] = None
+        self._seg_fatal = False
+        self._seg_fatal_reason = ""
         self.retry_max = max(0, int(retry_max))
         self.retry_interval = max(1, int(retry_interval))
         self.retry_interval_max = max(self.retry_interval, int(retry_interval_max))
@@ -277,6 +292,10 @@ class RoomRecorder:
         error = ""
         try:
             self._history_begin()
+            if self._seg_mode:
+                self._seg_worker = threading.Thread(
+                    target=self._segment_worker, name="seg-remux", daemon=True)
+                self._seg_worker.start()
             while not self._stop_event.is_set():
                 # --- 每次尝试前的守护检查 ---
                 if not diskmod.has_enough_space(self.output_dir, self.min_free_gb):
@@ -618,6 +637,8 @@ class RoomRecorder:
                 size = 0
             if size > 0:
                 self._emit(EventType.SEGMENT, f"新分段: {f.name}", path=str(f), size=size)
+        if self._seg_mode:
+            self._enqueue_finished_segments()
 
     def _total_size(self, files: Optional[List[Path]] = None) -> int:
         """统计文件总大小；不传 files 时统计本场已收集的所有文件。"""
@@ -632,12 +653,184 @@ class RoomRecorder:
                 pass
         return total
 
+    # ---------------- 分段即时转 MP4（C 方案） ----------------
+    def _enqueue_finished_segments(self, finalize: bool = False) -> None:
+        """把已写完的分段（不是当前正在写的那个）放进转码队列。"""
+        if not self._seg_mode or self._seg_fatal:
+            return
+        with self._lock:
+            files = list(self._files)
+            current = str(self._current_file or "").lower()
+        segs = [f for f in files if f.suffix.lower() in (".flv", ".ts")]
+        segs = [f for f in segs if _safe_size(f) > 0]
+        segs.sort(key=lambda p: p.name)
+        if not finalize:
+            segs = [f for f in segs if str(f).lower() != current]
+        with self._seg_lock:
+            for f in segs:
+                key = str(f).lower()
+                if key in self._seg_enqueued:
+                    continue
+                out = f.with_suffix(".mp4")
+                if any(str(o).lower() == str(out).lower() for o in self._seg_outputs):
+                    continue
+                self._seg_enqueued.add(key)
+                self._seg_queue.append(f)
+
+    def _segment_worker(self) -> None:
+        while True:
+            item = None
+            with self._seg_lock:
+                if self._seg_queue:
+                    item = self._seg_queue.pop(0)
+            if item is None:
+                if self._seg_stop.is_set() or self._seg_fatal:
+                    return
+                time.sleep(0.2)
+                continue
+            try:
+                self._convert_segment(item)
+            except Exception:  # pragma: no cover - 兜底
+                self.log.exception("分段转 MP4 异常")
+            if self._seg_fatal:
+                return
+
+    def _convert_segment(self, src: Path) -> None:
+        """转单个已完成分段：空间不足 → 删除源文件、立即停录、通知 manager。"""
+        if self._seg_fatal or not src.exists():
+            return
+        size = _safe_size(src)
+        try:
+            free = diskmod.free_gb(self.output_dir) * (1024 ** 3)
+        except Exception:
+            free = 0
+        margin = 300 * 1024 * 1024
+        if size and free < (size + margin):
+            self._fatal_segment(
+                src, "磁盘空间不足，无法转 MP4（剩余 %.1f GB，需要约 %.1f GB），已停止录制并删除源文件：%s"
+                     % (free / 1024 ** 3, (size + margin) / 1024 ** 3, src.name))
+            return
+        with _remux_sem:
+            ok, info = ffmpeg_util.remux_to_mp4(self.ffmpeg_path, src)
+        if ok:
+            dst = Path(info)
+            with self._seg_lock:
+                self._seg_outputs.append(dst)
+            self.log.info("分段已转 MP4: %s", dst.name)
+            self._emit(EventType.INFO, "分段已转 MP4: %s" % dst.name, path=str(dst))
+            if not self.keep_source:
+                try:
+                    src.unlink()
+                except OSError:
+                    pass
+            return
+        # 转换失败：按要求删除源文件，不留临时错误文件
+        try:
+            src.unlink()
+        except OSError:
+            pass
+        low = ("space" in info.lower() or "空间" in info or "no space" in info.lower())
+        msg = "分段转 MP4 失败，已删除源文件：%s（%s）" % (src.name, info[-200:])
+        if low:
+            self._fatal_segment(src, msg)
+        else:
+            self.log.error(msg)
+            self._emit(EventType.ERROR, msg)
+
+    def _fatal_segment(self, src: Optional[Path], reason: str) -> None:
+        if src is not None and src.exists():
+            try:
+                src.unlink()
+            except OSError:
+                pass
+        if self._seg_fatal:
+            return
+        self._seg_fatal = True
+        self._seg_fatal_reason = reason
+        self._stop_reason = "磁盘空间不足，无法转 MP4"
+        try:
+            self._error = reason
+        except Exception:
+            pass
+        self._stop_event.set()
+        self.log.error(self._seg_fatal_reason)
+        self._emit(EventType.DISK, self._seg_fatal_reason)
+        cb = self.on_critical
+        if cb is not None:
+            try:
+                threading.Thread(target=cb, args=(reason,), daemon=True,
+                                 name="rec-critical").start()
+            except Exception:
+                pass
+
+    def _drain_segments(self) -> None:
+        self._enqueue_finished_segments(finalize=True)
+        self._seg_stop.set()
+        worker = self._seg_worker
+        if worker is not None:
+            worker.join(timeout=1800)
+        while True:
+            item = None
+            with self._seg_lock:
+                if self._seg_queue:
+                    item = self._seg_queue.pop(0)
+            if item is None:
+                break
+            try:
+                self._convert_segment(item)
+            except Exception:  # pragma: no cover
+                self.log.exception("分段收尾转 MP4 异常")
+
+    def _finalize_segments(self) -> List[Path]:
+        """分段模式收尾：转完队列里的最后一段；失败/空间不足的文件已删除。"""
+        self._drain_segments()
+        # 清理 0 字节占位分段（ffmpeg 在分段边界被终止时会留下，无法转 MP4）
+        try:
+            for p in self.output_dir.iterdir():
+                if not p.is_file() or not p.name.startswith(self.filename_base):
+                    continue
+                if p.suffix.lower() in (".flv", ".ts") and _safe_size(p) == 0:
+                    p.unlink(missing_ok=True)
+                    self.log.info("清理空分段: %s", p.name)
+        except OSError:
+            pass
+        with self._lock:
+            files = [f for f in self._files if f.exists() and _safe_size(f) > 0]
+        if self._seg_fatal:
+            for f in list(files):
+                if f.suffix.lower() in (".flv", ".ts"):
+                    try:
+                        f.unlink()
+                        self.log.warning("已删除无法转 MP4 的源文件: %s", f.name)
+                    except OSError:
+                        pass
+            files = [f for f in files if f.exists()]
+        with self._seg_lock:
+            outputs = [p for p in self._seg_outputs if p.exists() and _safe_size(p) > 0]
+        result: List[Path] = []
+        seen = set()
+        for p in outputs:
+            key = str(p).lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(p)
+        if self.keep_source:
+            for f in files:
+                if f.suffix.lower() in (".flv", ".ts"):
+                    key = str(f).lower()
+                    if key not in seen:
+                        seen.add(key)
+                        result.append(f)
+        return result
+
     def _finalize(self) -> List[Path]:
         """录制收尾：刷新文件列表，按配置 remux 为 MP4，并按 keep_source 决定是否删源。
 
         返回最终文件列表（GUI/状态里展示的就是这些文件）。
         """
         self._refresh_files()
+        if self._seg_mode:
+            return self._finalize_segments()
         with self._lock:
             files = [f for f in self._files if f.exists()]
         files = [f for f in files if _safe_size(f) > 0]
@@ -653,14 +846,36 @@ class RoomRecorder:
         except Exception:
             need_bytes = free_bytes = 0
         if need_bytes and free_bytes < need_bytes:
-            msg = ("空间不足，本场保留原文件未转 MP4（需要约 %.1f GB，剩余 %.1f GB），"
-                   "腾出空间后可在「录制记录 → 补转历史 MP4」转换：%s"
+            msg = ("空间不足，无法转 MP4（需要约 %.1f GB，剩余 %.1f GB），"
+                   "已删除本场无法转换的文件：%s"
                    % (need_bytes / 1024 ** 3, free_bytes / 1024 ** 3, self.name))
-            self.log.warning(msg)
+            self.log.error(msg)
             self._emit(EventType.DISK, msg)
+            if not self.keep_source:
+                for f in originals:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                return []
             return files
         result = self._remux_files_limited(originals)
         if not result or result == originals:
+            # 转 MP4 失败且空间不足：按要求直接删除，不保留无法转换的临时文件
+            try:
+                free_now = diskmod.free_gb(self.output_dir) * (1024 ** 3)
+            except Exception:
+                free_now = 0
+            if not self.keep_source and need_bytes and free_now < need_bytes:
+                for f in originals:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+                msg = "转 MP4 失败且空间不足，已删除本场源文件：%s" % self.name
+                self.log.error(msg)
+                self._emit(EventType.DISK, msg)
+                return []
             return files
         produced = {p for p in result if p.suffix.lower() == ".mp4"}
         if self.keep_source:

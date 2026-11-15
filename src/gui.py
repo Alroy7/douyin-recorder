@@ -539,6 +539,7 @@ SETTINGS_GROUPS = [
         ("min_keep_seconds", "最短保留时长（分钟）", "int", "录制总时长低于此值自动删除，0=关闭；支持小数如 0.5"),
         ("segment_duration", "分段时长（分钟，0=不分段）", "int", "支持小数，如 30 分钟填 30"),
         ("segment_size_mb", "单个分段大小（MB，0=不限）", "int", ""),
+        ("segment_remux_now", "分段结束立即转 MP4", "bool", "开启后每段录完立刻转 mp4 并删源，避免整场结束才转占空间（需设置分段时长>0）"),
         ("remux_mp4", "录制结束转 MP4（不转码）", "bool", "停止监控/关闭软件时会先把正在录制的文件转成 MP4 再退出"),
         ("keep_source", "转 MP4 后保留原文件", "bool", ""),
         ("remux_concurrency", "同时转 MP4 数量", "int", "1~8，默认 2；避免多路同时 remux 写爆磁盘"),
