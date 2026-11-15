@@ -43,6 +43,20 @@ except ImportError:  # pragma: no cover - 直接运行脚本时
     import history as historymod  # type: ignore
     from model import EventType, RecordEvent  # type: ignore
 
+# 同时转 MP4 的数量（避免多路一起 remux 瞬间写爆磁盘/IO）
+_REMUX_CONCURRENCY = 2
+_remux_sem = threading.Semaphore(_REMUX_CONCURRENCY)
+
+
+def set_remux_concurrency(count: int) -> None:
+    """设置全局 remux 并发数（1~8）。"""
+    global _remux_sem
+    try:
+        n = max(1, min(8, int(count)))
+    except Exception:
+        n = 2
+    _remux_sem = threading.Semaphore(n)
+
 LOG = logging.getLogger("dyrec.recorder")
 
 #: 录制中间格式固定 FLV（http-flv 直录最稳）
@@ -201,6 +215,13 @@ class RoomRecorder:
         proc = self._proc
         if proc is not None and proc.poll() is None:
             ffmpeg_util.terminate_process(proc, wait=min(5.0, self.graceful_stop_timeout))
+
+    def set_min_free_gb(self, value: float) -> None:
+        """运行中动态更新「最小剩余空间」阈值（设置页修改后立即生效）。"""
+        try:
+            self.min_free_gb = float(value or 0)
+        except (TypeError, ValueError):
+            self.min_free_gb = 0.0
 
     def join(self, timeout: Optional[float] = None) -> bool:
         """等待录制线程结束，返回线程是否已结束。"""
@@ -625,7 +646,20 @@ class RoomRecorder:
         if not self.remux_mp4:
             return files
         originals = list(files)
-        result = self._remux_files(originals)
+        # 转 MP4 需要额外一份同等大小的空间：空间不够时保留原文件，避免转出损坏的半截 MP4
+        try:
+            need_bytes = sum(_safe_size(f) for f in originals) + 200 * 1024 * 1024
+            free_bytes = diskmod.free_gb(self.output_dir) * (1024 ** 3)
+        except Exception:
+            need_bytes = free_bytes = 0
+        if need_bytes and free_bytes < need_bytes:
+            msg = ("空间不足，本场保留原文件未转 MP4（需要约 %.1f GB，剩余 %.1f GB），"
+                   "腾出空间后可在「录制记录 → 补转历史 MP4」转换：%s"
+                   % (need_bytes / 1024 ** 3, free_bytes / 1024 ** 3, self.name))
+            self.log.warning(msg)
+            self._emit(EventType.DISK, msg)
+            return files
+        result = self._remux_files_limited(originals)
         if not result or result == originals:
             return files
         produced = {p for p in result if p.suffix.lower() == ".mp4"}
@@ -772,6 +806,10 @@ class RoomRecorder:
                 return True
             rest = tail
         return rest.isdigit() and len(rest) >= 3  # 分段：base_000.ext
+
+    def _remux_files_limited(self, files: List[Path]) -> List[Path]:
+        with _remux_sem:
+            return self._remux_files(files)
 
     def _remux_files(self, files: List[Path]) -> List[Path]:
         """把录制文件（单段或多段）转成 MP4。不删除源文件，由 _finalize 决定。"""

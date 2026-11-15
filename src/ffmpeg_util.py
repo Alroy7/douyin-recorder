@@ -390,8 +390,9 @@ def remux_to_mp4(ffmpeg: str, src: Path, dst: Optional[Path] = None,
         return False, f"remux 失败: {exc}"
     if proc.returncode != 0:
         err = (proc.stderr or b"").decode("utf-8", "replace").strip()
+        # 失败时删除半成品 MP4（空间不足会留下无法播放的残缺文件）
         try:
-            if dst.exists() and dst.stat().st_size == 0:
+            if dst.exists():
                 dst.unlink()
         except OSError:
             pass

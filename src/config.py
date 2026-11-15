@@ -76,6 +76,7 @@ DEFAULTS: Dict[str, Any] = {
     "container": "flv",              # 录制容器：flv（默认，直录最稳）或 ts
     "remux_mp4": True,               # 录制结束后是否 remux 成 MP4（-c copy 不转码）
     "keep_source": False,            # remux 成 MP4 后是否保留原文件
+    "remux_concurrency": 2,          # 同时转 MP4 的数量（1~8，避免同时写爆磁盘）
     "segment_duration": 0,           # 分段时长（秒），0 = 不分段
     "segment_size_mb": 0,            # 单文件大小上限（MB），0 = 不限；超出后自动换新文件
     "stall_check_seconds": 30,       # 卡死看门狗：每隔多少秒检查一次录制文件是否增长

@@ -541,6 +541,7 @@ SETTINGS_GROUPS = [
         ("segment_size_mb", "单个分段大小（MB，0=不限）", "int", ""),
         ("remux_mp4", "录制结束转 MP4（不转码）", "bool", "停止监控/关闭软件时会先把正在录制的文件转成 MP4 再退出"),
         ("keep_source", "转 MP4 后保留原文件", "bool", ""),
+        ("remux_concurrency", "同时转 MP4 数量", "int", "1~8，默认 2；避免多路同时 remux 写爆磁盘"),
         ("shutdown_wait_seconds", "退出时等待转换上限（秒）", "int", "停止监控或关闭软件时等待收尾/转 MP4 的最长时间，0=一直等待"),
         ("output_template", "保存目录结构", "combo", "默认「主播/日期」；选「仅主播」则所有录像直接放在主播目录下"),
         ("output_template_custom", "自定义目录模板", "str", "仅当结构选「自定义」时生效；可用 {anchor} {date} {time} {title} {room}"),
@@ -2799,14 +2800,30 @@ class RecorderApp:
         script = Path(__file__).resolve().parent.parent / "run.py"
 
         def worker() -> None:
+            # 直接在进程内生成（打包版里 sys.executable 是 GUI exe，不能再 spawn run.py）
             try:
-                proc = subprocess.run([sys.executable, str(script), "--export-diagnostics", path],
-                                      cwd=str(script.parent), capture_output=True, text=True,
-                                      encoding="utf-8", errors="replace", timeout=180)
-                msg = "诊断包已导出：%s" % path if proc.returncode == 0 else (
-                    "导出失败：%s" % (proc.stderr or proc.stdout)[-300:])
+                from .cli import export_diagnostics
+                out = export_diagnostics(path, self.cfg, self.watchlist,
+                                         days=self.cfg.get_int("log_keep_days") or 30)
+                ok = out.exists() and out.stat().st_size > 0
+                msg = ("诊断包已导出：%s（%.1f KB）" % (out, out.stat().st_size / 1024)
+                       if ok else "导出失败：文件未生成")
+                try:
+                    if ok:
+                        self.root.after(0, lambda: messagebox.showinfo(
+                            "诊断包已导出", msg, parent=self.root))
+                    else:
+                        self.root.after(0, lambda: messagebox.showerror(
+                            "导出失败", msg, parent=self.root))
+                except Exception:
+                    pass
             except Exception as exc:
                 msg = "导出失败：%s" % exc
+                try:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "导出失败", msg, parent=self.root))
+                except Exception:
+                    pass
             try:
                 self.root.after(0, lambda: self._emit_ui(msg))
             except Exception:
@@ -3009,10 +3026,24 @@ class RecorderApp:
                 else:
                     self.cfg[k] = v
             ok = self.cfg.save()
+            disk = {}
+            if ok:
+                try:
+                    disk = self.manager.apply_disk_policy()
+                except Exception:
+                    disk = {}
             if ok:
                 self._emit_ui("设置已保存")
                 try:
-                    messagebox.showinfo("保存成功", "设置已保存并立即生效。", parent=self.root)
+                    if disk.get("blocked"):
+                        messagebox.showwarning(
+                            "空间不足，已停止录制",
+                            ("设置已保存。\n\n" + str(disk.get("message") or
+                             "磁盘剩余空间低于保留值，已立即停止录制并暂停开录。")),
+                            parent=self.root)
+                    else:
+                        messagebox.showinfo("保存成功", "设置已保存并立即生效。",
+                                            parent=self.root)
                 except Exception:
                     pass
             else:

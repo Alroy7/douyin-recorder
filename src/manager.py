@@ -367,6 +367,7 @@ class MonitorManager:
         self._ffmpeg = ""
         self._started_at = 0.0
         self._pending_cleanup = False
+        self._disk_blocked: bool = False
 
         # ---- P1 调度状态（优先队列 + 固定工作池）----
         self._heap: List[Tuple[float, int, str]] = []
@@ -457,6 +458,16 @@ class MonitorManager:
         self._breaker = self._build_breaker()
         self._poll_bucket = self._build_poll_bucket()
         self._resolve_bucket = self._build_resolve_bucket()
+        try:
+            from .recorder import set_remux_concurrency
+            set_remux_concurrency(self.cfg.get_int("remux_concurrency"))
+        except Exception:
+            pass
+        self._disk_blocked = False
+        try:
+            self.apply_disk_policy("启动检查")
+        except Exception:
+            pass
         self._ensure_workers()
         self._init_scheduler()
         self._thread = threading.Thread(target=self._loop, name="monitor", daemon=True)
@@ -1085,6 +1096,7 @@ class MonitorManager:
                     self._gate_last_at = now
                     self._reap_recorders()
                     self._enforce_stop()
+                    self._check_disk_watchdog()
                     if not self._stop_event.is_set():
                         self._start_pending()
                     if self._pending_cleanup and not self._stop_event.is_set():
@@ -1486,8 +1498,77 @@ class MonitorManager:
         self.log.info("停止录制 [%s]: %s", item_id, reason)
         rec.stop(reason)
 
+    def _disk_status(self):
+        """返回 (剩余GB, 保留GB)。"""
+        try:
+            free = float(diskmod.free_gb(self.cfg.output_root))
+        except Exception:
+            free = 0.0
+        try:
+            reserve = float(self.cfg.get_float("min_free_gb"))
+        except Exception:
+            reserve = 0.0
+        return free, max(0.0, reserve)
+
+    def apply_disk_policy(self, reason: str = "设置已更新") -> Dict[str, Any]:
+        """立即应用「最小剩余空间」设置。
+
+        更新所有在录任务的阈值；若剩余空间已低于保留值，立即停止全部录制并暂停开录。
+        返回 {blocked, free, reserve, stopped, message}。
+        """
+        free, reserve = self._disk_status()
+        with self._lock:
+            recorders = list(self._recorders.values())
+        for rec in recorders:
+            try:
+                rec.set_min_free_gb(reserve)
+            except Exception:
+                pass
+        result: Dict[str, Any] = {"blocked": False, "free": free,
+                                  "reserve": reserve, "stopped": 0, "message": ""}
+        if reserve and free < reserve:
+            self._disk_blocked = True
+            stopped = 0
+            for rec in recorders:
+                try:
+                    rec.stop("磁盘空间不足（剩余 %.1f GB < 保留 %.1f GB）"
+                             % (free, reserve))
+                    stopped += 1
+                except Exception:
+                    pass
+            with self._lock:
+                self._queue.clear()
+            try:
+                self._manual_queue.clear()
+            except Exception:
+                pass
+            msg = ("磁盘剩余 %.1f GB 低于保留空间 %.1f GB：已停止 %d 路录制并暂停开录。"
+                   "请清理磁盘或调低保留值。" % (free, reserve, stopped))
+            self.log.warning("磁盘策略（%s）：%s", reason, msg)
+            self._emit(EventType.DISK, msg)
+            result.update({"blocked": True, "stopped": stopped, "message": msg})
+        else:
+            if self._disk_blocked:
+                msg = ("磁盘空间已恢复：剩余 %.1f GB（保留 %.1f GB），继续监控/录制"
+                       % (free, reserve))
+                self.log.info(msg)
+                self._emit(EventType.INFO, msg)
+            self._disk_blocked = False
+        return result
+
+    def _check_disk_watchdog(self) -> None:
+        """每秒检查磁盘：低于保留值立即停录并暂停开录；恢复后自动继续。"""
+        free, reserve = self._disk_status()
+        if reserve and free < reserve:
+            if not self._disk_blocked:
+                self.apply_disk_policy("磁盘 watchdog")
+        elif self._disk_blocked:
+            self.apply_disk_policy("磁盘 watchdog")
+
     def _gate_block_reason(self, active: int, used_mbps: float, estimated: float) -> str:
         """返回阻塞开录的原因（空字符串 = 可以开录）。"""
+        if self._disk_blocked:
+            return "磁盘空间不足（已暂停开录）"
         max_concurrent = self.cfg.get_int("max_concurrent")
         if max_concurrent > 0 and active >= max_concurrent:
             return "并发上限 %d 路" % max_concurrent

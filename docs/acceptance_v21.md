@@ -254,3 +254,14 @@ watchlist 1360 条（用户 Excel 导入）下：
 - _DialogBase.finish() 统一调用，覆盖 添加主播/导入直播间/批量设置/设置/缺少 ffmpeg 等全部对话框；
 - 直播画面预览窗口、正在退出进度窗口也改为居中；
 - 验证：tests/test_dialog_center.py（四类窗口中心点与主窗口中心差 <160px，且不在屏幕左上角）PASS。
+
+## 17. 磁盘保护 / 转 MP4 空间预检 / 诊断包修复（v2.5.3，2026-11-15）
+
+实机问题：D 盘写满（剩余 ~0GB）→ 大量 remux 失败 “No space left on device”；中途把保留空间从 2GB 改成 40GB 未立即生效（运行中的 recorder 仍用旧阈值）；导出诊断包选完路径没有生成文件。
+
+修复：
+1. 保留空间立即生效：保存设置时调用 manager.apply_disk_policy()，更新所有在录 recorder 的 min_free_gb；若当前剩余 < 保留值，立即停止全部录制、清空排队、暂停开录并弹窗提示；manager 每秒 watchdog 检查，空间恢复后自动解除限制。
+2. 转 MP4 空间预检：_finalize 在 remux 前检查「源文件总大小 + 200MB」是否小于剩余空间，不足则保留源文件并发出磁盘告警（提示用「补转历史 MP4」）；remux 失败时删除半成品 MP4。
+3. remux 并发限制：remux_concurrency（默认 2，设置→录制可调），避免几十路同时写 MP4 把磁盘瞬间写满/IO 打满。
+4. 导出诊断包：GUI 改为进程内调用 cli.export_diagnostics（打包版 sys.executable 是 GUI exe，原来 spawn run.py 会失败），成功/失败都有弹窗。
+- 测试：tests/test_disk_policy.py（保留值立即阻断/恢复、remux 空间不足跳过并保留源文件、诊断包导出）PASS。
