@@ -391,7 +391,7 @@ v2.5.4 起空间不足会立即停录并删除无法转换的文件；把「最�
 - 高并发原画录制对带宽和磁盘 IO 要求高（1080p 原画约 6.4Mbps ≈ 2.9GB/小时/路）；
 - 打包版未签名，首次运行 SmartScreen 需「更多信息 → 仍要运行」，杀软可能误报，加白名单即可；
 - 仅提供 Windows x64 打包版，GUI 需要桌面会话（服务器可用 CLI）；
-- `release/app` 与 zip 会随版本提交，仓库体积较大；长期建议把大文件放 GitHub Releases 或 Git LFS。
+- 运行包（app/zip）默认不作为源码提交；如果要把 exe 也放进 Git，仓库体积会增大，长期建议使用 GitHub Releases 或 Git LFS。
 
 ---
 
