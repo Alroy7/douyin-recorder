@@ -67,10 +67,10 @@
 
 ### 1. 免安装（推荐日常使用）
 
-仓库 `release/` 已带打包好的 Windows x64 版本：
+Windows x64 发布包（`DouyinRecorder_win64.zip`）可从 **GitHub Releases** 下载，或按本文「打包」一节在本地生成：
 
-- `release/app/`：解压即用的程序目录，双击 **`DouyinRecorder.exe`** 即可；
-- `release/DouyinRecorder_win64.zip`：同样的程序压缩包，方便拷贝/分发。
+- 解压后双击 **`DouyinRecorder.exe`** 即可运行；
+- 另有 `DouyinRecorder-CLI.exe` 带控制台的命令行入口，适合计划任务。
 
 程序不需要安装 Python 或 ffmpeg，Win10/11 x64 双击即用。
 
@@ -280,7 +280,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 可选参数：`-SkipZip`（只出目录）、`-NoSmokeTest`（跳过 `--check`）、`-DistDir <目录>`（程序正在运行时打包到别处）、`-Python <路径>`。
 `bin/ffmpeg.exe` 必须存在，构建时会一起打进包里。
 
-仓库里的 `release/` 是发布用副本（`app/` + `DouyinRecorder_win64.zip`）；日常更新代码后重新打包，再同步到 `release/` 即可。
+如希望把运行包一起提交到仓库，可把 `dist/DouyinRecorder` 与 zip 同步到 `release/`；注意这样仓库体积会明显增大，长期更推荐把大文件放 GitHub Releases 或使用 Git LFS。
 
 ---
 
@@ -297,7 +297,7 @@ douyin-recorder/
 ├─ records/                 默认录制目录
 ├─ logs/                    运行日志
 ├─ data/history.db          运行记录（SQLite）
-├─ release/                 免安装运行包（app/ + zip）
+├─ release/                 本地发布副本（app/ + zip，可选，不入 Git）
 ├─ build/                   PyInstaller 打包脚本/配置/图标
 ├─ docs/                    设计/协议/打包/测试报告等文档
 ├─ tests/                   自动化测试
