@@ -2162,7 +2162,15 @@ class RecorderApp:
         self.root.wait_window(dlg)
 
     def on_force_check(self) -> None:
+        if not self.manager.is_running():
+            self._emit_ui("监控未启动，无法立即检查；请先点击「开始监控」（开始后会立即检查所有主播）", "warning")
+            return
         try:
+            st = self.manager.stats()
+            if st.get("breaker_state") == "open":
+                remain = int(st.get("breaker_pause_remaining") or 0)
+                self._emit_ui("正在熔断暂停中（约 %d 秒后自动恢复），暂时无法查询" % remain, "warning")
+                return
             self.manager.force_check()
             self._emit_ui("已请求立即检查（下一轮立即执行）")
         except Exception as exc:
@@ -2301,6 +2309,9 @@ class RecorderApp:
     def _check_selected(self) -> None:
         ids = self._target_ids()
         if not ids:
+            return
+        if not self.manager.is_running():
+            self._emit_ui("监控未启动，无法立即检查；请先点击「开始监控」", "warning")
             return
         try:
             self.manager.force_check()
