@@ -705,10 +705,11 @@ class RoomRecorder:
         except Exception:
             free = 0
         margin = 300 * 1024 * 1024
-        if size and free < (size + margin):
+        # remux 期间源 FLV 与目标 MP4 同时存在，需要约 2×size 的空间，否则会半途写满磁盘
+        if size and free < (size * 2 + margin):
             self._fatal_segment(
                 src, "磁盘空间不足，无法转 MP4（剩余 %.1f GB，需要约 %.1f GB），已停止录制并删除源文件：%s"
-                     % (free / 1024 ** 3, (size + margin) / 1024 ** 3, src.name))
+                     % (free / 1024 ** 3, (size * 2 + margin) / 1024 ** 3, src.name))
             return
         with _remux_sem:
             ok, info = ffmpeg_util.remux_to_mp4(self.ffmpeg_path, src)
@@ -839,9 +840,10 @@ class RoomRecorder:
         if not self.remux_mp4:
             return files
         originals = list(files)
-        # 转 MP4 需要额外一份同等大小的空间：空间不够时保留原文件，避免转出损坏的半截 MP4
+        # 转 MP4 期间源文件与目标 MP4 同时存在，需要约 2 倍大小的空间：空间不够时
+        # 保留/删除原文件，避免转出损坏的半截 MP4
         try:
-            need_bytes = sum(_safe_size(f) for f in originals) + 200 * 1024 * 1024
+            need_bytes = 2 * sum(_safe_size(f) for f in originals) + 200 * 1024 * 1024
             free_bytes = diskmod.free_gb(self.output_dir) * (1024 ** 3)
         except Exception:
             need_bytes = free_bytes = 0
@@ -1075,8 +1077,9 @@ class RoomRecorder:
             if proc.returncode != 0 or not out.exists() or out.stat().st_size == 0:
                 err = (proc.stderr or b"").decode("utf-8", "replace")[-300:]
                 self.log.warning("concat 合并失败: %s", err)
+                # 无论 0 字节还是非 0 字节的半成品，都删除，不留残缺 MP4
                 try:
-                    if out.exists() and out.stat().st_size == 0:
+                    if out.exists():
                         out.unlink()
                 except OSError:
                     pass
@@ -1087,6 +1090,11 @@ class RoomRecorder:
             self.log.warning("concat 合并异常: %s", exc)
             try:
                 list_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                if out.exists():
+                    out.unlink()
             except OSError:
                 pass
             return None

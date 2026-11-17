@@ -945,8 +945,8 @@ class RecorderApp:
         self.tree.bind("<Double-1>", self.on_double_click)
         self.tree.bind("<Button-3>", self._on_context_menu)
         self._ctx_menu = tk.Menu(self.root, tearoff=0, font=T.font(10))
-        self._ctx_menu.add_command(label="开始录制", command=lambda: self._manual_record_selected(True))
-        self._ctx_menu.add_command(label="停止录制", command=lambda: self._manual_record_selected(False))
+        self._ctx_menu.add_command(label="开始录制", command=lambda: self._manual_record_selected(True, only_selection=True))
+        self._ctx_menu.add_command(label="停止录制", command=lambda: self._manual_record_selected(False, only_selection=True))
         self._ctx_menu.add_command(label="立即检查", command=self._check_selected)
         self._ctx_menu.add_command(label="重新启用并检查", command=self._reenable_selected)
         self._ctx_menu.add_separator()
@@ -2221,8 +2221,9 @@ class RecorderApp:
             except Exception:
                 pass
 
-    def _manual_record_selected(self, start: bool = True) -> None:
-        ids = self._target_ids()
+    def _manual_record_selected(self, start: bool = True, only_selection: bool = False) -> None:
+        # 右键菜单：只对「右键选中的那行」操作，不受勾选框影响；批量按钮：按勾选框
+        ids = self._selected_ids() if only_selection else self._target_ids()
         if not ids:
             messagebox.showinfo("提示", "请先选择主播（可按住 Ctrl/Shift 多选）", parent=self.root)
             return
@@ -2230,6 +2231,8 @@ class RecorderApp:
 
         def worker() -> None:
             ok_n = 0
+            queued_n = 0
+            messages = []
             for i in ids:
                 try:
                     if start:
@@ -2240,11 +2243,19 @@ class RecorderApp:
                     ok, msg = False, str(exc)
                 if ok:
                     ok_n += 1
+                    if start and "排队" in msg:
+                        queued_n += 1
                 else:
-                    try:
-                        self.root.after(0, lambda m=msg: self._emit_ui(m, "warning"))
-                    except Exception:
-                        pass
+                    messages.append(msg)
+            # 排队/失败原因也要明确展示，避免「点了开始却只显示成功」的假象
+            shown = list(messages)
+            if queued_n:
+                shown.append("%d 个已加入排队（磁盘/带宽受限，闸门释放后自动开录）" % queued_n)
+            for m in shown:
+                try:
+                    self.root.after(0, lambda m=m: self._emit_ui(m, "warning"))
+                except Exception:
+                    pass
             msg2 = "%s：成功 %d / 共 %d" % (action, ok_n, len(ids))
             try:
                 self.root.after(0, lambda: self._emit_ui(msg2))

@@ -371,6 +371,15 @@ def build_ffmpeg_cmd(ffmpeg: str, input_url: str, output_target: str,
     return cmd
 
 
+def _remove_file(path: Optional[Path]) -> None:
+    """安全删除文件（忽略一切错误，用于清理半成品）。"""
+    try:
+        if path is not None and Path(path).exists():
+            Path(path).unlink()
+    except OSError:
+        pass
+
+
 def remux_to_mp4(ffmpeg: str, src: Path, dst: Optional[Path] = None,
                  timeout: float = 1800, extra_args: Optional[List[str]] = None) -> Tuple[bool, str]:
     """无损 remux：flv/ts -> mp4（-c copy）。成功后删除源文件？由调用方决定。"""
@@ -387,15 +396,13 @@ def remux_to_mp4(ffmpeg: str, src: Path, dst: Optional[Path] = None,
         proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
                               creationflags=CREATE_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as exc:
+        # 超时/被 kill 等异常同样可能留下无法播放的半成品 MP4，统一清理
+        _remove_file(dst)
         return False, f"remux 失败: {exc}"
     if proc.returncode != 0:
         err = (proc.stderr or b"").decode("utf-8", "replace").strip()
         # 失败时删除半成品 MP4（空间不足会留下无法播放的残缺文件）
-        try:
-            if dst.exists():
-                dst.unlink()
-        except OSError:
-            pass
+        _remove_file(dst)
         return False, f"remux 失败(rc={proc.returncode}): {err[-500:]}"
     return True, str(dst)
 

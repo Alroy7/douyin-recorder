@@ -74,9 +74,13 @@ QUALITY_MBPS: Dict[str, float] = {
 DEFAULT_MBPS = 6.4
 
 def _looks_like_disconnect(message: str) -> bool:
-    """RECONNECT 事件里是否属于真正的断流/卡死（"第 N 次重连" 只是重试开始标记，不重复计数）。"""
+    """RECONNECT 事件里是否属于真正的断流/卡死（"第 N 次重连" 只是重试开始标记，不重复计数）。
+
+    注意：不计入「启动后 N 秒未收到任何数据」——那是拉流地址过期/失效的症状，
+    由重连时重新取地址解决，不应触发清晰度降档（否则会把原画误降成 hd/sd）。
+    """
     text = str(message or "")
-    return ("断流" in text) or ("卡死" in text) or ("未收到任何数据" in text)
+    return ("断流" in text) or ("卡死" in text)
 
 
 #: 错误文本里的「风控/限流」关键词（用于统计 risk_count）
@@ -479,6 +483,11 @@ class MonitorManager:
         self.log.info("监控已启动：轮询限速 %d/s，%d 个工作线程，%d 个主播",
                       self.cfg.get_int("poll_rate_limit"),
                       self.cfg.get_int("max_poll_workers"), len(self.watchlist))
+        self.log.info(
+            "并发闸门：max_concurrent=%d（0=不限），max_total_mbps=%d（0=不限），"
+            "max_ffmpeg_processes=%d，磁盘保留 %.1f GB",
+            self.cfg.get_int("max_concurrent"), self.cfg.get_int("max_total_mbps"),
+            self.cfg.get_int("max_ffmpeg_processes"), self.cfg.get_float("min_free_gb"))
         return True, "已开始监控"
 
     def stop(self, wait: bool = True, timeout: float = 120.0) -> bool:
@@ -1548,6 +1557,15 @@ class MonitorManager:
             self._emit(EventType.DISK, msg)
             result.update({"blocked": True, "stopped": stopped, "message": msg})
         else:
+            # 恢复前加滞回：剩余空间要明显高于保留值才继续，避免在阈值附近反复停/开
+            recover_at = reserve + max(2.0, reserve * 0.25)
+            if self._disk_blocked and free < recover_at:
+                result.update({
+                    "blocked": True, "stopped": 0,
+                    "message": "磁盘仍在恢复中：剩余 %.1f GB，需达到 %.1f GB 才继续录制"
+                               % (free, recover_at),
+                })
+                return result
             if self._disk_blocked:
                 msg = ("磁盘空间已恢复：剩余 %.1f GB（保留 %.1f GB），继续监控/录制"
                        % (free, reserve))
@@ -1679,6 +1697,48 @@ class MonitorManager:
         except Exception:  # pragma: no cover
             self.log.exception("处理录制端磁盘告警失败")
 
+    def _make_stream_url_provider(self, item_id: str, quality: str, initial_url: str):
+        """返回一个「每次重连都重新取流地址」的回调，供录制器使用。
+
+        抖音拉流地址带签名、有时效，重连必须重新取，否则会用过期地址无限空转。
+        - 首次直接返回 initial_url（避免重复查询）；
+        - 之后每次重连都现查一次，取到新地址就缓存；查询失败/已下播时回退上次地址；
+        - 加 15 秒节流，避免查询风暴。
+        """
+        state = {"ts": time.time(), "url": initial_url}
+
+        def provider() -> Optional[str]:
+            now = time.time()
+            if state["url"] and now - state["ts"] < 15.0:
+                return state["url"]
+            item = self.watchlist.get(item_id)
+            if item is None:
+                return state["url"] or None
+            # 复用查询限速令牌，避免大量重连同时现查把接口打爆；拿不到令牌就回退旧地址
+            try:
+                if not self._poll_bucket.try_acquire(time.monotonic()):
+                    return state["url"] or None
+            except Exception:
+                pass
+            try:
+                st = self.checker.check(item)
+            except Exception:
+                st = None
+            if st is not None and getattr(st, "is_live", False) and not getattr(st, "error", ""):
+                url = self.checker.choose_url(st, quality)
+                if url:
+                    with self._lock:
+                        self._stream_urls[item_id] = url
+                        self._last_status[item_id] = st
+                    state["ts"] = now
+                    state["url"] = url
+                    return url
+            with self._lock:
+                fallback = self._stream_urls.get(item_id, "") or state["url"]
+            return fallback or None
+
+        return provider
+
     def _start_recording(self, item: WatchItem, st: StatusView,
                          quality: Optional[str] = None) -> bool:
         quality = str(quality or self._session_quality.get(item.id)
@@ -1696,6 +1756,8 @@ class MonitorManager:
             return False
         with self._lock:
             self._stream_urls[item.id] = url
+        # 录制器每次重连都会调用 provider 重新取流地址，避免复用过期签名地址
+        provider = self._make_stream_url_provider(item.id, quality, url)
 
         try:
             out_dir = render_output_dir(
@@ -1726,7 +1788,7 @@ class MonitorManager:
             ffmpeg_path = self._ffmpeg or ffmpeg_util.resolve_ffmpeg(self.cfg.get_str("ffmpeg_path"))[0]
             rec = RoomRecorder(
                 ffmpeg_path,
-                url,
+                provider,
                 out_dir,
                 base,
                 name=item.display_name,
@@ -1936,6 +1998,9 @@ class MonitorManager:
         reason = self._gate_block_reason(active, used_mbps, estimated)
         if reason:
             self._set_queued(item, reason, estimated)
+            self._emit(EventType.INFO,
+                       "手动录制已加入排队（%s）：%s" % (item.display_name, reason),
+                       item=item)
             return True, "已加入排队：" + reason
         if self._start_recording(item, st):
             return True, "已开始录制"

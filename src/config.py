@@ -65,6 +65,7 @@ DEFAULTS: Dict[str, Any] = {
     # ---- 录制/并发闸门 ----
     "max_total_mbps": 0,             # 录制总带宽预算（Mbps），0 = 不限；超出则排队
     "max_ffmpeg_processes": 300,     # 同时运行的 ffmpeg 进程数上限（0 = 不限）
+    "auto_tune_limits": True,        # 启动时按本机 CPU/网卡/磁盘 自动回填并发/带宽/磁盘保留推荐值
     "output_dir": str(DEFAULT_OUTPUT_DIR),   # 录制输出根目录
     "output_template": "{anchor}/{date}",     # 房间子目录模板（相对 output_dir）
     "output_template_custom": "{anchor}",     # 设置页选「自定义…」时使用的模板
@@ -436,6 +437,12 @@ def load_config(path: Optional[Path] = None) -> Config:
     """加载配置并确保目录存在（供 run.py / GUI / CLI 调用）。"""
     cfg = Config.load(path)
     cfg.ensure_dirs()
+    # 启动时按本机容量自动回填并发/带宽/磁盘保留推荐值（只改自动/不限的项，保证能录所有主播）
+    try:
+        from . import capacity as _capacity
+        _capacity.apply_recommendations(cfg)
+    except Exception:  # pragma: no cover - 极端导入失败不影响启动
+        LOG.warning("容量自动调优失败", exc_info=True)
     # 把「最短保留时长」注入录制引擎：Manager 构造 RoomRecorder 时未显式传参则用它。
     # （manager.py 由其他人维护，这里用模块级默认值解耦，避免修改它）
     try:
