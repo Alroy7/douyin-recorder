@@ -20,6 +20,7 @@ import subprocess
 from typing import Any, Dict, Optional
 
 from .disk import free_gb as _disk_free_gb
+from .disk import total_gb as _disk_total_gb
 
 LOG = logging.getLogger("dyrec.capacity")
 
@@ -156,10 +157,12 @@ def detect() -> Dict[str, Any]:
 
 def recommend(cfg, free_gb: Optional[float] = None,
               network_mbps: Optional[int] = None,
-              cores: Optional[int] = None) -> Dict[str, Any]:
+              cores: Optional[int] = None,
+              total_gb: Optional[float] = None) -> Dict[str, Any]:
     """根据本机配置给出推荐值（纯计算、不落盘，便于测试注入假探测值）。
 
-    network_mbps 传 None 表示「未探测到带宽」；cores 传 None 表示用 cpu_cores()。
+    network_mbps 传 None 表示「未探测到带宽」；cores 传 None 表示用 cpu_cores()；
+    free_gb / total_gb 传 None 表示按 output_root 实际磁盘探测。
     返回 dict，值为 None 表示「不调整」。
     """
     if cores is None:
@@ -169,6 +172,11 @@ def recommend(cfg, free_gb: Optional[float] = None,
             free_gb = _disk_free_gb(cfg.output_root)
         except Exception:
             free_gb = -1.0
+    if total_gb is None:
+        try:
+            total_gb = _disk_total_gb(cfg.output_root)
+        except Exception:
+            total_gb = -1.0
 
     notes: list = []
     rec: Dict[str, Any] = {
@@ -194,16 +202,21 @@ def recommend(cfg, free_gb: Optional[float] = None,
     rec["max_poll_workers"] = max(4, min(32, cores * 2))
     rec["remux_concurrency"] = max(2, min(8, max(1, cores // 2)))
 
-    # ---- 磁盘保留值：仅当「保留值 >= 剩余空间的一半」时自动下调（典型病态配置）----
+    # ---- 磁盘保留值：仅当「保留值明显过高」时自动下调（避免磁盘一满就反复停录/整日不录）----
+    # 判定：保留值 > 10 GB（连续录制工具不该留这么多），且（磁盘总容量未知或保留值 >= 总容量 5%）
     try:
         current = float(cfg.get_float("min_free_gb"))
     except Exception:
         current = 0.0
-    if free_gb > 0 and current > 0 and current >= free_gb * 0.5:
-        new_reserve = round(max(2.0, min(10.0, free_gb * 0.15)), 1)
+    if current > 10.0 and (total_gb <= 0 or current >= total_gb * 0.05):
+        if total_gb > 0:
+            new_reserve = round(max(2.0, min(10.0, total_gb * 0.02)), 1)
+        else:
+            new_reserve = 3.0
         rec["min_free_gb"] = new_reserve
-        notes.append("磁盘剩余 %.1f GB，但 min_free_gb=%.1f 过于激进，已自动下调为 %.1f GB"
-                     "，避免反复停录/重开" % (free_gb, current, new_reserve))
+        notes.append("min_free_gb=%.1f 过高（磁盘总容量 %.1f GB），已自动下调为 %.1f GB，"
+                     "避免录满后长时间停止录制"
+                     % (current, total_gb if total_gb > 0 else 0.0, new_reserve))
 
     return rec
 

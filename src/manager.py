@@ -1574,9 +1574,45 @@ class MonitorManager:
             self._disk_blocked = False
         return result
 
+    def _auto_correct_reserve(self) -> float:
+        """磁盘保留值过高时自动下调（>10GB 且 >= 磁盘总容量 5%），避免录满后长期停录。
+
+        每次 watchdog 都会调用（廉价）；只在真正需要下调时写一次配置。
+        """
+        try:
+            reserve = float(self.cfg.get_float("min_free_gb"))
+        except Exception:
+            return 0.0
+        if reserve <= 10.0:
+            return max(0.0, reserve)
+        try:
+            total = diskmod.total_gb(self.cfg.output_root)
+        except Exception:
+            total = -1.0
+        if total > 0 and reserve < total * 0.05:
+            return reserve  # 大磁盘且比例小，尊重用户设置
+        new_reserve = round(max(2.0, min(10.0, total * 0.02)), 1) if total > 0 else 3.0
+        self.log.warning("磁盘保留值 %.1f GB 过高（磁盘总容量 %.1f GB），自动下调为 %.1f GB，"
+                         "避免录满后长时间停止录制",
+                         reserve, total if total > 0 else 0.0, new_reserve)
+        self.cfg["min_free_gb"] = new_reserve
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        with self._lock:
+            recorders = list(self._recorders.values())
+        for rec in recorders:
+            try:
+                rec.set_min_free_gb(new_reserve)
+            except Exception:
+                pass
+        return new_reserve
+
     def _check_disk_watchdog(self) -> None:
         """每秒检查磁盘：低于保留值立即停录并暂停开录；恢复后自动继续。"""
-        free, reserve = self._disk_status()
+        reserve = self._auto_correct_reserve()
+        free, _res = self._disk_status()
         if reserve and free < reserve:
             if not self._disk_blocked:
                 self.apply_disk_policy("磁盘 watchdog")

@@ -62,6 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="导出主播活跃度 CSV（最近开播时间/未开播天数），默认 activity_report.csv")
     parser.add_argument("--convert-leftovers", action="store_true",
                         help="把输出目录中未转 MP4 的 .flv/.ts 补转为 MP4 后退出")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="清理输出目录：补转残留 flv/ts，并删除时长低于 min_keep_seconds 的短视频")
     parser.add_argument("--export-watchlist", metavar="PATH", default="",
                         help="把当前主播列表（含分组/画质/开关等）导出为 xlsx/csv")
     parser.add_argument("--import-file", metavar="PATH", default="",
@@ -265,6 +267,46 @@ def _dispatch(args, cfg, watchlist) -> int:
               % (result["converted"], result["failed"], result["total"],
                  result["deleted"]))
         return 0 if result["failed"] == 0 else 1
+    if getattr(args, "cleanup", False):
+        from src import remux_legacy
+        from src import ffmpeg_util
+        try:
+            root = cfg.output_root
+        except Exception:
+            print("无法确定输出目录")
+            return 2
+        ok, ffmpeg_path, info = ffmpeg_util.check_ffmpeg(cfg.get_str("ffmpeg_path"))
+        if not ok:
+            print("未找到可用的 ffmpeg：%s" % info)
+            return 2
+        # 1) 补转残留 flv/ts
+        files = remux_legacy.find_sources(root, min_age_seconds=120)
+        conv = {"converted": 0, "failed": 0, "total": 0, "deleted": 0}
+        if files:
+            print("发现 %d 个残留 flv/ts，开始补转…" % len(files))
+            conv = remux_legacy.convert_sources(
+                files, ffmpeg_path, keep_source=cfg.get_bool("keep_source"),
+                on_progress=lambda i, n, p, ok2, msg: print(
+                    "  %d/%d %s %s" % (i, n, p.name, "OK" if ok2 else "失败")))
+            print("补转完成：成功 %d / 失败 %d / 删除源文件 %d"
+                  % (conv["converted"], conv["failed"], conv["deleted"]))
+        else:
+            print("没有残留 flv/ts")
+        # 2) 删除时长低于 min_keep_seconds 的短视频
+        min_keep = cfg.get_int("min_keep_seconds")
+        if min_keep <= 0:
+            print("min_keep_seconds=0（关闭），跳过短视频清理")
+            return 0 if conv["failed"] == 0 else 1
+        print("扫描时长低于 %d 秒的短视频（ffmpeg 解析，可能较慢）…" % min_keep)
+        shorts = remux_legacy.find_short_videos(root, ffmpeg_path, min_keep,
+                                                min_age_seconds=120)
+        if not shorts:
+            print("没有需要删除的短视频")
+            return 0 if conv["failed"] == 0 else 1
+        print("发现 %d 个短视频，开始删除…" % len(shorts))
+        short_res = remux_legacy.cleanup_short_videos(shorts)
+        print("短视频清理完成：删除 %d / 失败 %d" % (short_res["deleted"], short_res["failed"]))
+        return 0 if conv["failed"] == 0 and short_res["failed"] == 0 else 1
     if getattr(args, "export_watchlist", ""):
         from src import export_util
         try:

@@ -37,6 +37,22 @@ def free_gb(path: Path) -> float:
     return round(b / (1024 ** 3), 2) if b >= 0 else -1.0
 
 
+def total_bytes(path: Path) -> int:
+    """返回 path 所在磁盘总容量字节数；失败返回 -1。"""
+    p = Path(path)
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    try:
+        return shutil.disk_usage(str(p)).total
+    except OSError:
+        return -1
+
+
+def total_gb(path: Path) -> float:
+    b = total_bytes(path)
+    return round(b / (1024 ** 3), 2) if b >= 0 else -1.0
+
+
 def has_enough_space(path: Path, min_free_gb: float) -> bool:
     if min_free_gb <= 0:
         return True

@@ -11,9 +11,68 @@ from typing import Callable, Dict, List, Optional
 
 from . import ffmpeg_util
 
-__all__ = ["find_sources", "convert_sources"]
+__all__ = ["find_sources", "convert_sources", "find_short_videos", "cleanup_short_videos"]
 
 SOURCE_EXTS = (".flv", ".ts", ".mkv")
+
+
+def find_short_videos(root: Path, ffmpeg_path: str, min_seconds: float,
+                      min_age_seconds: float = 120.0,
+                      limit: int = 0) -> List[Dict[str, object]]:
+    """扫描输出目录中「确认时长 < min_seconds」的 mp4 文件。
+
+    只处理修改时间早于 min_age_seconds 的文件（避免动到正在录制/刚结束的）；
+    时长用 ffmpeg 解析，解析失败（-1）的跳过，宁可保留也不误删。
+    返回 [{"path", "duration"}]。
+    """
+    root = Path(root)
+    min_seconds = float(min_seconds or 0)
+    if not root.exists() or min_seconds <= 0 or not ffmpeg_path:
+        return []
+    now = time.time()
+    out: List[Dict[str, object]] = []
+    for p in sorted(root.rglob("*.mp4")):
+        try:
+            if not p.is_file():
+                continue
+            if now - p.stat().st_mtime < float(min_age_seconds):
+                continue
+            duration = ffmpeg_util.probe_duration(ffmpeg_path, p)
+            if duration < 0 or duration >= min_seconds:
+                continue
+            out.append({"path": p, "duration": duration})
+            if limit and len(out) >= limit:
+                break
+        except OSError:
+            continue
+    return out
+
+
+def cleanup_short_videos(items: List[Dict[str, object]],
+                         on_progress: Optional[Callable[[int, int, Path, bool, str], None]] = None
+                         ) -> Dict[str, object]:
+    """删除指定的短视频文件。"""
+    total = len(items)
+    result: Dict[str, object] = {"total": total, "deleted": 0, "failed": 0, "errors": []}
+    errors: List[str] = result["errors"]  # type: ignore[assignment]
+    for index, item in enumerate(items, start=1):
+        path = Path(str(item.get("path")))
+        ok = False
+        msg = ""
+        try:
+            path.unlink()
+            result["deleted"] = int(result["deleted"]) + 1
+            ok, msg = True, "已删除"
+        except OSError as exc:
+            result["failed"] = int(result["failed"]) + 1
+            msg = str(exc)
+            errors.append("%s: %s" % (path.name, exc))
+        if on_progress:
+            try:
+                on_progress(index, total, path, ok, msg)
+            except Exception:
+                pass
+    return result
 
 
 def find_sources(root: Path, min_age_seconds: float = 120.0,

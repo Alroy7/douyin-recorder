@@ -80,11 +80,12 @@ def test_recommend_without_network():
 
 def test_recommend_pathological_disk():
     cfg = _cfg(min_free_gb=25.0)
-    rec = capacity.recommend(cfg, free_gb=25.0, network_mbps=None, cores=8)
+    rec = capacity.recommend(cfg, free_gb=25.0, total_gb=100.0,
+                             network_mbps=None, cores=8)
     assert rec["min_free_gb"] is not None, rec
     assert 2.0 <= rec["min_free_gb"] <= 10.0, rec
     assert rec["min_free_gb"] < 25.0, rec
-    assert any("过于激进" in n for n in rec["notes"]), rec["notes"]
+    assert any("过高" in n for n in rec["notes"]), rec["notes"]
     print("PASS recommend 病态 min_free_gb 下调 ->", rec["min_free_gb"])
 
 
@@ -123,17 +124,72 @@ def test_apply_recommendations_fill_only_zero():
 def test_apply_recommendations_fixes_pathological_disk():
     cfg = _cfg(min_free_gb=25.0)
     orig_net = capacity.network_downlink_mbps
-    orig_free = capacity._disk_free_gb
+    orig_total = capacity._disk_total_gb
     capacity.network_downlink_mbps = lambda: None
-    capacity._disk_free_gb = lambda *_a, **_k: 25.0
+    capacity._disk_total_gb = lambda *_a, **_k: 100.0
     try:
         res = capacity.apply_recommendations(cfg)
     finally:
         capacity.network_downlink_mbps = orig_net
-        capacity._disk_free_gb = orig_free
+        capacity._disk_total_gb = orig_total
     assert res["applied"].get("min_free_gb") is not None, res
     assert cfg["min_free_gb"] < 25.0, cfg["min_free_gb"]
     print("PASS apply 病态 min_free_gb 落盘下调 ->", cfg["min_free_gb"])
+
+
+def test_short_video_cleanup():
+    import os
+    import shutil
+    import time
+    from src import remux_legacy as rl
+    d = TMP / "shorttest"
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    short1 = d / "a.mp4"; short1.write_bytes(b"x" * 1000)
+    short2 = d / "b.mp4"; short2.write_bytes(b"x" * 1000)
+    long1 = d / "c.mp4"; long1.write_bytes(b"x" * 1000)
+    old = time.time() - 3600
+    for p in (short1, short2, long1):
+        os.utime(p, (old, old))
+    orig = rl.ffmpeg_util.probe_duration
+
+    def fake_probe(_ff, path, **_kw):
+        return 100.0 if Path(path).name in ("a.mp4", "b.mp4") else 3000.0
+
+    rl.ffmpeg_util.probe_duration = fake_probe
+    try:
+        found = rl.find_short_videos(d, "ffmpeg", 900, min_age_seconds=60)
+    finally:
+        rl.ffmpeg_util.probe_duration = orig
+    names = sorted(Path(i["path"]).name for i in found)
+    assert names == ["a.mp4", "b.mp4"], names
+    short_res = rl.cleanup_short_videos(found)
+    assert short_res["deleted"] == 2, short_res
+    assert not short1.exists() and not short2.exists()
+    assert long1.exists(), "长视频不应被删"
+    print("PASS 短视频扫描+清理")
+
+
+def test_manager_auto_correct_reserve():
+    import src.manager as mmod
+    from src.manager import MonitorManager
+    from src.storage import Watchlist
+    cfg = _cfg(min_free_gb=25.0, use_mock_api=True)
+    wl = Watchlist(TMP / "reserve_wl.json")
+    wl.clear()
+    mgr = MonitorManager(cfg, wl)
+    orig_total = mmod.diskmod.total_gb
+    mmod.diskmod.total_gb = lambda *_a, **_k: 100.0
+    try:
+        new = mgr._auto_correct_reserve()
+    finally:
+        mmod.diskmod.total_gb = orig_total
+    assert new < 25.0, new
+    assert cfg["min_free_gb"] < 25.0, cfg["min_free_gb"]
+    cfg["min_free_gb"] = 3.0
+    assert mgr._auto_correct_reserve() == 3.0
+    print("PASS manager 运行期自动下调过高保留值 ->", new)
 
 
 def main():
@@ -145,6 +201,8 @@ def main():
         ("recommend 正常磁盘", test_recommend_normal_disk_untouched),
         ("apply 只回填 0 项", test_apply_recommendations_fill_only_zero),
         ("apply 病态磁盘落盘", test_apply_recommendations_fixes_pathological_disk),
+        ("短视频清理", test_short_video_cleanup),
+        ("manager 保留值自动下调", test_manager_auto_correct_reserve),
     ]
     failed = []
     for name, fn in tests:

@@ -44,7 +44,8 @@ if _packaging_doc.is_file():
 hiddenimports = [
     "src", "src.cli", "src.capacity", "src.checker", "src.config", "src.disk",
     "src.dy_api", "src.ffmpeg_util", "src.gui", "src.logger", "src.manager",
-    "src.mock_api", "src.model", "src.notify", "src.recorder", "src.storage",
+    "src.mock_api", "src.model", "src.notify", "src.recorder", "src.remux_legacy",
+    "src.storage",
     "tkinter", "tkinter.ttk", "tkinter.messagebox", "tkinter.filedialog",
     "ctypes", "msvcrt", "io",
 ]
