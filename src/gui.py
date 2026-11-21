@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from . import disk as diskmod
 from . import ffmpeg_util
+from . import cleanup_dir
 from .config import Config
 from .manager import MonitorManager
 from . import import_util
@@ -587,6 +588,7 @@ SETTINGS_GROUPS = [
         ("log_keep_days", "日志保留天数", "int", "超期自动清理"),
         ("log_level", "日志级别", "combo", ""),
     ]),
+    ("维护", []),
 ]
 
 
@@ -2904,6 +2906,10 @@ class RecorderApp:
         for w in form.winfo_children():
             w.destroy()
         self._setting_vars = {}
+        if group == "维护":
+            self._render_maintenance_panel(form)
+            self._settings_hint.configure(text="配置文件：%s" % self.cfg.path)
+            return
         fields = dict(SETTINGS_GROUPS).get(group, [])
         row = 0
         for key, label, kind, hint in fields:
@@ -2989,6 +2995,115 @@ class RecorderApp:
             row += 1
         form.grid_columnconfigure(1, weight=1)
         self._settings_hint.configure(text="配置文件：%s" % self.cfg.path)
+
+    # ---------------- 维护：清理输出目录 ----------------
+    def _render_maintenance_panel(self, form: tk.Frame) -> None:
+        form.grid_columnconfigure(0, weight=1)
+        T.section_title(form, "清理输出目录").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        desc = (
+            "清理输出根目录下由「录制已停止」残留的垃圾文件（建议先「停止监控」再清理）：\n"
+            "    · 空文件夹\n"
+            "    · 转换失败的 flv / ts（能补转的先补转，补不了的删除）\n"
+            "    · 不完整的 mp4（0 字节或 ffmpeg 解析不出时长）\n"
+            "    · 时长低于「最短保留时长」（当前 %d 秒）的 mp4\n"
+            "只处理修改时间早于 2 分钟、且不在录制中的文件，正在录制的文件不会被删。"
+            % self.cfg.get_int("min_keep_seconds")
+        )
+        T.hint_label(form, desc, bg_parent=T.CARD).grid(row=1, column=0, sticky="w", pady=(0, 12))
+        btns = tk.Frame(form, bg=T.CARD)
+        btns.grid(row=2, column=0, sticky="w")
+        T.RButton(btns, "开始清理…", command=lambda: self._run_cleanup_directory(False),
+                  kind="primary", width=110, height=32).pack(side="left")
+        T.RButton(btns, "只扫描预览（不删除）", command=lambda: self._run_cleanup_directory(True),
+                  kind="ghost", width=160, height=32, bg_parent=T.CARD).pack(
+            side="left", padx=(10, 0))
+        self._cleanup_progress = tk.Label(form, text="", bg=T.CARD, fg=T.MUTED,
+                                          font=T.font(9), anchor="w", justify="left")
+        self._cleanup_progress.grid(row=3, column=0, sticky="w", pady=(12, 0))
+
+    def _run_cleanup_directory(self, dry_run: bool = False) -> None:
+        try:
+            root = self.cfg.output_root
+        except Exception as exc:  # pragma: no cover
+            messagebox.showwarning("清理失败", "无法确定输出目录：%s" % exc, parent=self.root)
+            return
+        ok, ffmpeg_path, info = ffmpeg_util.check_ffmpeg(self.cfg.get_str("ffmpeg_path"))
+        if not ok:
+            messagebox.showwarning("清理失败", "未找到可用的 ffmpeg：%s" % info,
+                                   parent=self.root)
+            return
+        min_keep = self.cfg.get_int("min_keep_seconds")
+        if not dry_run:
+            tip = ("将清理输出目录：\n%s\n\n"
+                   "    · 空文件夹\n"
+                   "    · 转换失败的 flv / ts（先尝试补转，补不了的删除）\n"
+                   "    · 不完整 mp4\n"
+                   "    · 时长低于 %d 秒的 mp4\n\n"
+                   "该操作不可撤销（建议先停止监控）。是否继续？" % (root, min_keep))
+            if not messagebox.askyesno("确认清理目录", tip, parent=self.root):
+                return
+        try:
+            protected = self.manager.protected_files()
+        except Exception:
+            protected = []
+        progress = getattr(self, "_cleanup_progress", None)
+
+        def _prog(done: int, total: int, msg: str) -> None:
+            if progress is None or not total:
+                return
+            if done % 200 != 0 and done != total:
+                return
+            text = "扫描/清理 %d/%d：%s" % (done, total, msg[:60])
+            try:
+                self.root.after(0, lambda t=text: progress.configure(text=t))
+            except Exception:
+                pass
+
+        def worker() -> None:
+            try:
+                stats = cleanup_dir.cleanup_directory(
+                    root, ffmpeg_path, min_keep, min_age_seconds=120.0,
+                    protect=protected, dry_run=dry_run, on_progress=_prog)
+            except Exception as exc:  # pragma: no cover
+                self.root.after(0, lambda e=exc: messagebox.showerror(
+                    "清理失败", "清理异常：%s" % e, parent=self.root))
+                return
+            self.root.after(0, lambda s=stats: self._after_cleanup(s, dry_run))
+
+        threading.Thread(target=worker, name="gui-cleanup", daemon=True).start()
+        self._emit_ui("开始%s输出目录…" % ("扫描" if dry_run else "清理"))
+
+    def _after_cleanup(self, stats: Dict[str, Any], dry_run: bool = False) -> None:
+        progress = getattr(self, "_cleanup_progress", None)
+        if progress is not None:
+            try:
+                progress.configure(text="")
+            except Exception:
+                pass
+        if dry_run:
+            text = ("扫描预览（未删除任何文件）：\n"
+                    "    可补转 flv/ts：%d\n"
+                    "    重复残留 flv/ts：%d\n"
+                    "    不完整 mp4：%d\n"
+                    "    过短 mp4（<%d 秒）：%d\n"
+                    "    共扫描文件：%d"
+                    % (int(stats.get("plan_flv_convert") or 0),
+                       int(stats.get("plan_flv_leftover") or 0),
+                       int(stats.get("plan_mp4_incomplete") or 0),
+                       self.cfg.get_int("min_keep_seconds"),
+                       int(stats.get("plan_mp4_short") or 0),
+                       int(stats.get("plan_scanned") or 0)))
+            messagebox.showinfo("扫描预览", text, parent=self.root)
+            self._emit_ui("扫描预览：" + text.replace("\n", "  "), "info")
+            return
+        text = cleanup_dir.summary_text(stats)
+        messagebox.showinfo("清理完成", text, parent=self.root)
+        self._emit_ui(text)
+        errs = stats.get("errors") or []
+        if errs:
+            self._emit_ui("清理有 %d 个错误，详见日志" % len(errs), "warning")
+            for err in list(errs)[:5]:
+                self._emit_ui("  - %s" % err, "warning")
 
     def _collect_settings_group(self) -> None:
         if not getattr(self, "_setting_vars", None):

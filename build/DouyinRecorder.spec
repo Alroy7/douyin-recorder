@@ -42,7 +42,8 @@ if _packaging_doc.is_file():
 
 # ---- 隐式导入（业务模块都是函数内静态 import，正常可分析到；显式列出更稳）----
 hiddenimports = [
-    "src", "src.cli", "src.capacity", "src.checker", "src.config", "src.disk",
+    "src", "src.cli", "src.capacity", "src.cleanup_dir", "src.checker",
+    "src.config", "src.disk",
     "src.dy_api", "src.ffmpeg_util", "src.gui", "src.logger", "src.manager",
     "src.mock_api", "src.model", "src.notify", "src.recorder", "src.remux_legacy",
     "src.storage",

@@ -70,6 +70,11 @@ def main():
     pump(app, 0.3)
     dlg.destroy()
 
+    # 设置页「维护」分组：清理目录面板能正常渲染
+    app._render_settings("维护")
+    pump(app, 0.3)
+    assert hasattr(app, "_cleanup_progress"), "维护面板未渲染"
+
     # 开始监控（mock 直播源）
     app.on_start()
     pump(app, 12)

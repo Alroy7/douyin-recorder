@@ -1545,6 +1545,26 @@ class MonitorManager:
             reserve = 0.0
         return free, max(0.0, reserve)
 
+    def protected_files(self) -> List[Path]:
+        """正在录制/写入的文件路径（清理输出目录时用于保护，绝不删除）。"""
+        out: List[Path] = []
+        with self._lock:
+            recorders = list(self._recorders.values())
+        for rec in recorders:
+            try:
+                st = rec.status()
+            except Exception:
+                continue
+            for key in ("files", "current_file"):
+                val = st.get(key)
+                if isinstance(val, (list, tuple)):
+                    for p in val:
+                        if p:
+                            out.append(Path(p))
+                elif val:
+                    out.append(Path(val))
+        return out
+
     def apply_disk_policy(self, reason: str = "设置已更新") -> Dict[str, Any]:
         """立即应用「最小剩余空间」设置。
 
