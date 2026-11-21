@@ -193,10 +193,11 @@ class LiveChecker:
 
     # ---------------- 解析 ----------------
     def resolve(self, text: str) -> Dict[str, Any]:
-        """解析用户输入，返回 {web_rid, url, name}（可能联网，失败时用本地解析结果）。"""
+        """解析用户输入，返回 {web_rid, sec_uid, url, name}（可能联网，失败时用本地解析结果）。"""
         local = parse_target_text(text)
         result = {
             "web_rid": local.get("web_rid") or "",
+            "sec_uid": local.get("sec_uid") or "",
             "url": local.get("url") or "",
             "name": "",
             "error": "",
@@ -207,6 +208,9 @@ class LiveChecker:
                 rid = info.get("web_rid")
                 if rid:
                     result["web_rid"] = str(rid)
+                sec = info.get("sec_uid")
+                if sec:
+                    result["sec_uid"] = str(sec)
                 url = info.get("url")
                 if url:
                     result["url"] = str(url)

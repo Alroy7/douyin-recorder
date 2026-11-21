@@ -1768,8 +1768,11 @@ class RecorderApp:
         row = self._current_row() or {}
         url = str(row.get("homepage") or "")
         if not url:
-            messagebox.showinfo("提示", "该主播没有主页链接（列表里填写的是房间号或昵称）",
-                                parent=self.root)
+            messagebox.showinfo(
+                "提示",
+                "该主播没有可用的抖音主页链接（未解析到 sec_uid）。\n"
+                "可先用右键「浏览器打开直播间」，或等一次状态查询后再试。",
+                parent=self.root)
             return
         webbrowser.open(url)
 

@@ -22,13 +22,14 @@ EXPORT_HEADERS = ["序号", "主播名称", "房间号", "主页链接", "直播
 
 
 def _homepage_of(item) -> str:
+    """主播主页链接：优先 sec_uid，其次 url/target 里的 /user/<sec_uid>；不返回直播间地址。"""
+    sec = str(getattr(item, "sec_uid", "") or "").strip()
+    if sec and re.fullmatch(r"[A-Za-z0-9_\-]+", sec):
+        return "https://www.douyin.com/user/" + sec
     for raw in (getattr(item, "url", "") or "", getattr(item, "target", "") or ""):
         m = re.search(r"douyin\.com/user/([A-Za-z0-9_\-]+)", raw or "")
         if m:
             return "https://www.douyin.com/user/" + m.group(1)
-    url = (getattr(item, "url", "") or "").strip()
-    if url.startswith("http") and "douyin.com" in url and "/user/" not in url:
-        return url
     return ""
 
 

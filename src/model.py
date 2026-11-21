@@ -59,6 +59,7 @@ _RE_ROOM = re.compile(r"(?:live\.douyin\.com/|/root/)(\d{5,})")
 _RE_LIVE_URL = re.compile(r"https?://[^\s\"']*live\.douyin\.com[^\s\"']*")
 _RE_ANY_URL = re.compile(r"https?://[^\s\"']+")
 _RE_DIGITS = re.compile(r"^\s*(\d{5,})\s*$")
+_RE_USER = re.compile(r"douyin\.com/user/([A-Za-z0-9_\-]+)")
 
 
 def parse_target_text(text: str) -> Dict[str, Optional[str]]:
@@ -72,7 +73,7 @@ def parse_target_text(text: str) -> Dict[str, Optional[str]]:
     """
     raw = (text or "").strip()
     info: Dict[str, Optional[str]] = {
-        "web_rid": None, "url": "", "short_url": "", "text": raw,
+        "web_rid": None, "sec_uid": None, "url": "", "short_url": "", "text": raw,
     }
     if not raw:
         return info
@@ -82,6 +83,10 @@ def parse_target_text(text: str) -> Dict[str, Optional[str]]:
         info["web_rid"] = m.group(1)
         info["url"] = f"https://live.douyin.com/{m.group(1)}"
         return info
+
+    m = _RE_USER.search(raw)
+    if m:  # 电脑主播主页链接 https://www.douyin.com/user/<sec_uid>
+        info["sec_uid"] = m.group(1)
 
     m = _RE_ROOM.search(raw)
     if m:
@@ -117,6 +122,7 @@ class WatchItem:
     target: str = ""                  # 用户原始输入（链接/房间号/分享文案）
     web_rid: str = ""                 # 直播间数字房间号
     url: str = ""                     # 直播间地址
+    sec_uid: str = ""                 # 主播主页 sec_uid（用于「跳转到抖音主页」）
     auto_record: bool = True          # 开播自动录制
     quality: str = "origin"           # origin/hd/sd
     output_template: str = ""         # 目录模板，空 = 用全局配置
@@ -132,7 +138,8 @@ class WatchItem:
     def from_dict(cls, data: Dict[str, Any]) -> "WatchItem":
         d = dict(data or {})
         item = cls()
-        for f in ("name", "target", "web_rid", "url", "quality", "output_template", "note", "group", "id"):
+        for f in ("name", "target", "web_rid", "url", "sec_uid", "quality",
+                  "output_template", "note", "group", "id"):
             if d.get(f) is not None:
                 setattr(item, f, str(d[f]))
         item.auto_record = bool(d.get("auto_record", True))

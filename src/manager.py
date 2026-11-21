@@ -73,6 +73,20 @@ QUALITY_MBPS: Dict[str, float] = {
 #: 估算不到时的保守值
 DEFAULT_MBPS = 6.4
 
+def _status_sec_uid(st) -> str:
+    """从一次查询结果里取主播 sec_uid（dy_api 把 owner.sec_uid 放在 raw 里）。"""
+    try:
+        obj = getattr(st, "raw_obj", None)
+        raw = getattr(obj, "raw", None)
+        if isinstance(raw, dict):
+            sec = raw.get("sec_uid")
+            if sec:
+                return str(sec).strip()
+    except Exception:  # pragma: no cover
+        pass
+    return ""
+
+
 def _looks_like_disconnect(message: str) -> bool:
     """RECONNECT 事件里是否属于真正的断流/卡死（"第 N 次重连" 只是重试开始标记，不重复计数）。
 
@@ -657,6 +671,9 @@ class MonitorManager:
         if not item.url and info.get("url"):
             item.url = str(info["url"])
             changed = True
+        if not getattr(item, "sec_uid", "") and info.get("sec_uid"):
+            item.sec_uid = str(info["sec_uid"])
+            changed = True
         if not item.name and info.get("name"):
             item.name = str(info["name"])
             changed = True
@@ -777,15 +794,19 @@ class MonitorManager:
 
     @staticmethod
     def _item_homepage(item) -> str:
-        """从主播条目推导抖音主页链接（用于右键跳转）。"""
+        """推导抖音主页链接（用于右键「跳转到抖音主页」）。
+
+        只认「主播主页」：优先 item.sec_uid，其次 url/target 里的 /user/<sec_uid>；
+        绝不返回直播间地址——否则「跳转抖音主页」会跳到直播间。
+        """
         import re as _re
+        sec = str(getattr(item, "sec_uid", "") or "").strip()
+        if sec and _re.fullmatch(r"[A-Za-z0-9_\-]+", sec):
+            return "https://www.douyin.com/user/" + sec
         for raw in (getattr(item, "url", "") or "", getattr(item, "target", "") or ""):
             m = _re.search(r"douyin\.com/user/([A-Za-z0-9_\-]+)", raw or "")
             if m:
                 return "https://www.douyin.com/user/" + m.group(1)
-        url = (getattr(item, "url", "") or "").strip()
-        if url.startswith("http") and "douyin.com" in url:
-            return url
         return ""
 
     def preview_url(self, item_id: str) -> str:
@@ -1310,6 +1331,11 @@ class MonitorManager:
         if st.room_id and not item.web_rid:
             item.web_rid = st.room_id
             need_save = True
+        if not getattr(item, "sec_uid", ""):
+            sec = _status_sec_uid(st)
+            if sec:
+                item.sec_uid = sec
+                need_save = True
         if need_save:
             self.watchlist.update(item, save=False)
             self._schedule_watchlist_save()
